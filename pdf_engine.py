@@ -15,6 +15,26 @@ import pymupdf
 import arabic_reshaper
 from bidi.algorithm import get_display
 
+# دعم استخراج النصوص والمصطلحات من المخططات والصور عبر OCR
+try:
+    import cv2
+    import numpy as np
+    from rapidocr_onnxruntime import RapidOCR
+    HAS_OCR = True
+    _OCR_ENGINE = None
+except ImportError:
+    HAS_OCR = False
+    _OCR_ENGINE = None
+
+def get_ocr_engine():
+    global _OCR_ENGINE
+    if HAS_OCR and _OCR_ENGINE is None:
+        try:
+            _OCR_ENGINE = RapidOCR()
+        except Exception:
+            _OCR_ENGINE = None
+    return _OCR_ENGINE
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FONTS_DIR = os.path.join(BASE_DIR, "fonts")
 
@@ -165,7 +185,14 @@ class FastTranslationEngine:
             pass
 
 
-def translate_pdf_file(input_pdf_path, output_pdf_path, progress_hook=None):
+def translate_pdf_file(
+    input_pdf_path,
+    output_pdf_path,
+    font_size=6.8,
+    color=(0.85, 0.0, 0.0),
+    enable_ocr=True,
+    progress_hook=None
+):
     font_path = get_font_path()
     if not font_path:
         raise RuntimeError("No Arabic font found.")
@@ -174,13 +201,57 @@ def translate_pdf_file(input_pdf_path, output_pdf_path, progress_hook=None):
     total_pages = len(doc)
     font = pymupdf.Font(fontfile=font_path)
     engine = FastTranslationEngine()
+    ocr_engine = get_ocr_engine() if enable_ocr else None
 
-    # 1. جمع الكلمات الفريدة
+    # 1. جمع الكلمات الفريدة من النصوص والمخططات
     unique_words = set()
     pages_words = {}
     for p_idx in range(total_pages):
         page = doc[p_idx]
-        words = page.get_text("words")
+        words = list(page.get_text("words"))
+
+        # استخراج المصطلحات التوضيحية داخل الصور والمخططات
+        if ocr_engine and page.get_images():
+            try:
+                for img_info in page.get_image_info():
+                    bbox = pymupdf.Rect(img_info['bbox'])
+                    if bbox.width > 80 and bbox.height > 50:
+                        pix = page.get_pixmap(clip=bbox, dpi=150)
+                        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape((pix.h, pix.w, pix.n))
+                        if pix.n == 4:
+                            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+                        else:
+                            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                        res, _ = ocr_engine(img)
+                        if res:
+                            scale_x = bbox.width / pix.w
+                            scale_y = bbox.height / pix.h
+                            for box, text, score in res:
+                                try: s_val = float(score)
+                                except: s_val = 1.0
+                                if s_val < 0.35 or not text.strip():
+                                    continue
+                                bx0 = bbox.x0 + min(p[0] for p in box) * scale_x
+                                bx1 = bbox.x0 + max(p[0] for p in box) * scale_x
+                                by0 = bbox.y0 + min(p[1] for p in box) * scale_y
+                                by1 = bbox.y0 + max(p[1] for p in box) * scale_y
+                                l_words = text.split()
+                                if not l_words: continue
+                                total_c = sum(len(w) for w in l_words) + max(0, len(l_words)-1)
+                                cur_x = bx0
+                                lw = max(10.0, bx1 - bx0)
+                                for lw_text in l_words:
+                                    w_len = len(lw_text)
+                                    ww = lw * (w_len / max(1, total_c))
+                                    sw = lw * (1.0 / max(1, total_c))
+                                    # منع التكرار إذا كانت الكلمة موجودة مسبقاً في نفس الإحداثيات
+                                    is_dup = any(abs(ew[0] - cur_x) < 14 and abs(ew[1] - by0) < 10 for ew in words)
+                                    if not is_dup:
+                                        words.append((cur_x, by0, cur_x + ww, by1, lw_text))
+                                    cur_x += ww + sw
+            except Exception:
+                pass
+
         pages_words[p_idx] = words
         for w in words:
             clean = re.sub(r"^[^\w']+|[^\w']+$", '', w[4]).lower()
@@ -190,9 +261,10 @@ def translate_pdf_file(input_pdf_path, output_pdf_path, progress_hook=None):
     # 2. الترجمة المسبقة لأي كلمات نادرة بدفعة واحدة
     engine.prefetch(unique_words)
 
-    # 3. إعدادات الخط المضبوطة (حجم أكبر 6.6pt مع ضبط المحاذاة ومنع التداخل)
-    gloss_size = 6.6
+    # 3. إعدادات الخط المضبوطة مع المحاذاة الدقيقة ومنع التداخل
+    gloss_size = float(font_size)
     vertical_offset = 1.8
+    chosen_color = tuple(color) if isinstance(color, (list, tuple)) else (0.85, 0.0, 0.0)
 
     for p_idx in range(total_pages):
         page = doc[p_idx]
@@ -228,7 +300,7 @@ def translate_pdf_file(input_pdf_path, output_pdf_path, progress_hook=None):
                 # ملاءمة الحجم إذا كانت الكلمة أطول من المساحة الإنجليزية
                 word_w = x1 - x0
                 if gloss_w > word_w * 1.6 and cur_size > 5.6:
-                    cur_size = 5.8
+                    cur_size = max(5.4, cur_size - 0.8)
                     gloss_w = font.text_length(bidi_text, fontsize=cur_size)
 
                 x_center = (x0 + x1) / 2.0
@@ -246,7 +318,7 @@ def translate_pdf_file(input_pdf_path, output_pdf_path, progress_hook=None):
                     fontname="arial_ar_gloss",
                     fontfile=font_path,
                     fontsize=cur_size,
-                    color=(0.85, 0.0, 0.0), # أحمر عالي الوضوح
+                    color=chosen_color,
                     overlay=True
                 )
                 last_x1 = x_pos + gloss_w
