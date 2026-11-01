@@ -122,19 +122,26 @@ class FastTranslationEngine:
 
     def translate_word(self, word):
         w = word.lower().strip()
-        if not w or len(w) <= 1:
+        if not w:
             return ''
         
-        # 1. In-memory dictionary (0ms)
+        # 1. فحص الكلمة في المعجم أولاً (حتى لو كانت حرفاً مثل a أو e أو l)
         if w in self.master_dict:
             return self.master_dict[w]
 
-        # 2. In-memory stems (0ms)
+        # 2. فحص جذور الكلمة والتصريفات في الذاكرة
         for stem in get_word_stems(w):
             if stem in self.master_dict:
                 return self.master_dict[stem]
 
-        # 3. In-memory cache (0ms)
+        # 3. فحص الكلمات المركبة بالواصلة مثل wall-less أو rod-shaped
+        if '-' in w:
+            parts = [p.strip() for p in w.split('-') if p.strip()]
+            part_trans = [self.translate_word(p) for p in parts]
+            if any(part_trans):
+                return ' - '.join(pt for pt in part_trans if pt)
+
+        # 4. الذاكرة المؤقتة للكلمات الحديثة
         with self.lock:
             if w in self.cache:
                 return self.cache[w]
@@ -255,8 +262,9 @@ def translate_pdf_file(
         pages_words[p_idx] = words
         for w in words:
             clean = re.sub(r"^[^\w']+|[^\w']+$", '', w[4]).lower()
-            if clean and not clean.isdigit() and len(clean) > 1:
-                unique_words.add(clean)
+            if clean and not clean.isdigit():
+                if len(clean) > 1 or clean in engine.master_dict:
+                    unique_words.add(clean)
 
     # 2. الترجمة المسبقة لأي كلمات نادرة بدفعة واحدة
     engine.prefetch(unique_words)
@@ -284,7 +292,9 @@ def translate_pdf_file(
                 x0, y0, x1, y1, raw_text = w[0], w[1], w[2], w[3], w[4]
                 clean = re.sub(r"^[^\w']+|[^\w']+$", '', raw_text).lower()
 
-                if not clean or clean.isdigit() or len(clean) <= 1:
+                if not clean or clean.isdigit():
+                    continue
+                if len(clean) == 1 and clean not in engine.master_dict:
                     continue
 
                 ar_trans = engine.translate_word(clean)

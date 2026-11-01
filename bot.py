@@ -142,10 +142,10 @@ def settings_main_markup(chat_id):
 
 def size_menu_markup():
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("صغير (5.5pt)", callback_data="opt_size_small")
-    b2 = types.InlineKeyboardButton("متوسط (6.8pt)", callback_data="opt_size_medium")
-    b3 = types.InlineKeyboardButton("كبير (7.8pt)", callback_data="opt_size_large")
-    b4 = types.InlineKeyboardButton("كبير جداً (9.0pt)", callback_data="opt_size_xlarge")
+    b1 = types.InlineKeyboardButton("صغير (5.5pt)", callback_data="size_small")
+    b2 = types.InlineKeyboardButton("متوسط (6.8pt)", callback_data="size_medium")
+    b3 = types.InlineKeyboardButton("كبير (7.8pt)", callback_data="size_large")
+    b4 = types.InlineKeyboardButton("كبير جداً (9.0pt)", callback_data="size_xlarge")
     back = types.InlineKeyboardButton("🔙 رجوع", callback_data="menu_settings_main")
     markup.add(b1, b2)
     markup.add(b3, b4)
@@ -154,12 +154,12 @@ def size_menu_markup():
 
 def color_menu_markup():
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("🔴 أحمر", callback_data="opt_color_red")
-    b2 = types.InlineKeyboardButton("🔵 أزرق", callback_data="opt_color_blue")
-    b3 = types.InlineKeyboardButton("🟢 أخضر", callback_data="opt_color_green")
-    b4 = types.InlineKeyboardButton("🟣 بنفسجي", callback_data="opt_color_purple")
-    b5 = types.InlineKeyboardButton("🟠 برتقالي", callback_data="opt_color_orange")
-    b6 = types.InlineKeyboardButton("⚫ أسود", callback_data="opt_color_black")
+    b1 = types.InlineKeyboardButton("🔴 أحمر", callback_data="color_red")
+    b2 = types.InlineKeyboardButton("🔵 أزرق", callback_data="color_blue")
+    b3 = types.InlineKeyboardButton("🟢 أخضر", callback_data="color_green")
+    b4 = types.InlineKeyboardButton("🟣 بنفسجي", callback_data="color_purple")
+    b5 = types.InlineKeyboardButton("🟠 برتقالي", callback_data="color_orange")
+    b6 = types.InlineKeyboardButton("⚫ أسود", callback_data="color_black")
     back = types.InlineKeyboardButton("🔙 رجوع", callback_data="menu_settings_main")
     markup.add(b1, b2)
     markup.add(b3, b4)
@@ -348,6 +348,12 @@ def handle_info(message):
 # 10. معالجة الأزرار التفاعلية
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
+    # إيقاف مؤشر التحميل الدوار في تليجرام فوراً وبدون أي تأخير
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
+
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
     data = call.data
@@ -360,7 +366,6 @@ def handle_callbacks(call):
             "وسيقوم البوت تلقائياً بمعالجته وإرسال النسخة المترجمة لك في ثوانٍ!",
             parse_mode="Markdown"
         )
-        bot.answer_callback_query(call.id)
 
     elif data == "trans_mode":
         bot.send_message(
@@ -368,15 +373,12 @@ def handle_callbacks(call):
             "🌐 اكتب الأمر `/tr` متبوعاً بأي جملة لترجمتها فوراً.",
             parse_mode="Markdown"
         )
-        bot.answer_callback_query(call.id)
 
     elif data == "my_info":
         handle_info(call.message)
-        bot.answer_callback_query(call.id)
 
     elif data == "help_cmd":
         handle_help(call.message)
-        bot.answer_callback_query(call.id)
 
     # قائمة الإعدادات الرئيسية
     elif data == "menu_settings_main":
@@ -390,24 +392,31 @@ def handle_callbacks(call):
         try:
             bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=settings_main_markup(chat_id))
         except Exception:
-            bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=settings_main_markup(chat_id))
-        bot.answer_callback_query(call.id)
+            try:
+                bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=settings_main_markup(chat_id))
+            except Exception:
+                pass
 
     # قائمة اختيار الحجم
     elif data == "menu_size":
         text = "📏 **اختر حجم خط الترجمة المطلوب للملفات:**"
-        bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=size_menu_markup())
-        bot.answer_callback_query(call.id)
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=size_menu_markup())
+        except Exception:
+            pass
 
     # قائمة اختيار اللون
     elif data == "menu_color":
         text = "🎨 **اختر لون خط الترجمة المطلوب:**"
-        bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=color_menu_markup())
-        bot.answer_callback_query(call.id)
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=color_menu_markup())
+        except Exception:
+            pass
 
-    # حفظ الحجم المختار
-    elif data in SIZE_OPTIONS:
-        chosen = SIZE_OPTIONS[data]
+    # حفظ الحجم المختار (دعم المفتاح المباشر أو ببادئة opt_)
+    elif data in SIZE_OPTIONS or data.replace("opt_", "") in SIZE_OPTIONS:
+        key = data if data in SIZE_OPTIONS else data.replace("opt_", "")
+        chosen = SIZE_OPTIONS[key]
         update_user_settings(chat_id, chosen)
         conf = get_user_settings(chat_id)
         text = (
@@ -415,12 +424,15 @@ def handle_callbacks(call):
             f"• **لون الترجمة الحالي**: `{conf['color_label']}`\n\n"
             "سيتم تطبيق هذا الحجم على جميع ملفاتك القادمة تلقائياً."
         )
-        bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=settings_main_markup(chat_id))
-        bot.answer_callback_query(call.id, f"تم اختيار: {chosen['size_label']}")
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=settings_main_markup(chat_id))
+        except Exception:
+            pass
 
-    # حفظ اللون المختار
-    elif data in COLOR_OPTIONS:
-        chosen = COLOR_OPTIONS[data]
+    # حفظ اللون المختار (دعم المفتاح المباشر أو ببادئة opt_)
+    elif data in COLOR_OPTIONS or data.replace("opt_", "") in COLOR_OPTIONS:
+        key = data if data in COLOR_OPTIONS else data.replace("opt_", "")
+        chosen = COLOR_OPTIONS[key]
         update_user_settings(chat_id, chosen)
         conf = get_user_settings(chat_id)
         text = (
@@ -428,8 +440,10 @@ def handle_callbacks(call):
             f"• **حجم الخط الحالي**: `{conf['size_label']}`\n\n"
             "سيتم تطبيق هذا اللون على جميع ملفاتك القادمة تلقائياً."
         )
-        bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=settings_main_markup(chat_id))
-        bot.answer_callback_query(call.id, f"تم اختيار: {chosen['color_label']}")
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=settings_main_markup(chat_id))
+        except Exception:
+            pass
 
     # إعادة التعيين للافتراضي
     elif data == "set_reset":
@@ -440,8 +454,10 @@ def handle_callbacks(call):
             f"• **حجم الخط**: `{conf['size_label']}`\n"
             f"• **اللون**: `{conf['color_label']}`"
         )
-        bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=settings_main_markup(chat_id))
-        bot.answer_callback_query(call.id, "تمت استعادة الإعدادات الافتراضية")
+        try:
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=settings_main_markup(chat_id))
+        except Exception:
+            pass
 
 
 # 11. الرسائل العادية
