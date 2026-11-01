@@ -1,0 +1,8 @@
+pyTelegramBotAPI>=4.20.0
+flask>=3.0.0
+requests>=2.31.0
+deep-translator>=1.11.0
+pymupdf>=1.24.0
+arabic-reshaper>=3.0.0
+python-bidi>=0.6.0
+gunicorn>=21.2.0
