@@ -61,11 +61,32 @@ def start_keep_alive():
     t.start()
 
 
-# 3. التحقق من التوكن
+# 3. التحقق من التوكن وضبط استقرار الاتصال
 if not BOT_TOKEN:
     print("[!] خطأ: لم يتم العثور على BOT_TOKEN. يرجى وضعه في ملف .env أو متغيرات البيئة.")
     sys.exit(1)
 
+from telebot import apihelper
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
+
+def setup_resilient_session():
+    try:
+        session = apihelper._get_req_session()
+        retry_strategy = Retry(
+            total=10,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            raise_on_status=False
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=20, pool_maxsize=20)
+        session.mount('https://', adapter)
+        session.mount('http://', adapter)
+        apihelper.SESSION = session
+    except Exception as e:
+        print(f"[!] تحذير أثناء تهيئة جلسة الاتصال: {e}")
+
+setup_resilient_session()
 bot = telebot.TeleBot(BOT_TOKEN)
 
 
