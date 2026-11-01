@@ -6,6 +6,7 @@ Telegram Multi-Purpose & PDF Translator Bot (24/7 Cloud Ready - Zero VPS)
 
 import os
 import sys
+import json
 import threading
 import time
 import telebot
@@ -80,10 +81,10 @@ DEFAULT_SETTINGS = {
 }
 
 SIZE_OPTIONS = {
-    'size_small': {'font_size': 5.5, 'size_label': '🔹 صغير (5.5pt)'},
-    'size_medium': {'font_size': 6.8, 'size_label': '🔹 متوسط (6.8pt)'},
-    'size_large': {'font_size': 7.8, 'size_label': '🔹 كبير (7.8pt)'},
-    'size_xlarge': {'font_size': 9.0, 'size_label': '🔹 كبير جداً (9.0pt)'}
+    'size_small': {'font_size': 5.5, 'size_label': 'صغير (5.5pt)'},
+    'size_medium': {'font_size': 6.8, 'size_label': 'متوسط (6.8pt)'},
+    'size_large': {'font_size': 7.8, 'size_label': 'كبير (7.8pt)'},
+    'size_xlarge': {'font_size': 9.0, 'size_label': 'كبير جداً (9.0pt)'}
 }
 
 COLOR_OPTIONS = {
@@ -95,72 +96,97 @@ COLOR_OPTIONS = {
     'color_black': {'color': [0.08, 0.08, 0.08], 'color_name': 'black', 'color_label': '⚫ أسود'}
 }
 
-def get_user_settings(chat_id):
-    chat_id = str(chat_id)
+# ذاكرة تخزين مؤقت لإعدادات المستخدمين متزامنة مع القرص
+USER_SETTINGS = {}
+SETTINGS_LOCK = threading.Lock()
+
+def _load_settings_from_disk():
+    global USER_SETTINGS
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if chat_id in data:
-                    res = DEFAULT_SETTINGS.copy()
-                    res.update(data[chat_id])
-                    return res
-        except Exception:
-            pass
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    if isinstance(data, dict):
+                        with SETTINGS_LOCK:
+                            USER_SETTINGS = data
+        except Exception as e:
+            print(f"[!] تحذير أثناء قراءة إعدادات المستخدمين: {e}")
+
+_load_settings_from_disk()
+
+def get_user_settings(chat_id):
+    chat_id = str(chat_id)
+    with SETTINGS_LOCK:
+        if chat_id in USER_SETTINGS:
+            res = DEFAULT_SETTINGS.copy()
+            res.update(USER_SETTINGS[chat_id])
+            return res
+    # محاولة إعادة القراءة من القرص
+    _load_settings_from_disk()
+    with SETTINGS_LOCK:
+        if chat_id in USER_SETTINGS:
+            res = DEFAULT_SETTINGS.copy()
+            res.update(USER_SETTINGS[chat_id])
+            return res
     return DEFAULT_SETTINGS.copy()
 
 def update_user_settings(chat_id, new_vals):
     chat_id = str(chat_id)
-    data = {}
-    if os.path.exists(SETTINGS_FILE):
+    with SETTINGS_LOCK:
+        user_conf = USER_SETTINGS.get(chat_id, DEFAULT_SETTINGS.copy())
+        user_conf.update(new_vals)
+        USER_SETTINGS[chat_id] = user_conf
         try:
-            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception:
-            pass
-    user_conf = data.get(chat_id, DEFAULT_SETTINGS.copy())
-    user_conf.update(new_vals)
-    data[chat_id] = user_conf
-    try:
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-    return user_conf
+            with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(USER_SETTINGS, f, ensure_ascii=False, indent=2)
+                f.flush()
+        except Exception as e:
+            print(f"[!] خطأ أثناء حفظ إعدادات المستخدم في القرص: {e}")
+        return user_conf.copy()
 
-# لوحات الأزرار
+# لوحات الأزرار التفاعلية
 def settings_main_markup(chat_id):
     conf = get_user_settings(chat_id)
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_size = types.InlineKeyboardButton(f"📏 حجم الخط: {conf['size_label']}", callback_data="menu_size")
     btn_color = types.InlineKeyboardButton(f"🎨 اللون: {conf['color_label']}", callback_data="menu_color")
-    btn_reset = types.InlineKeyboardButton("🔄 إعادة ضبط للافتراضي", callback_data="set_reset")
+    btn_reset = types.InlineKeyboardButton("🔄 استعادة الافتراضي", callback_data="set_reset")
     markup.add(btn_size)
     markup.add(btn_color)
     markup.add(btn_reset)
     return markup
 
-def size_menu_markup():
+def size_menu_markup(chat_id):
+    conf = get_user_settings(chat_id)
+    cur_size = conf.get('font_size', 6.8)
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("صغير (5.5pt)", callback_data="size_small")
-    b2 = types.InlineKeyboardButton("متوسط (6.8pt)", callback_data="size_medium")
-    b3 = types.InlineKeyboardButton("كبير (7.8pt)", callback_data="size_large")
-    b4 = types.InlineKeyboardButton("كبير جداً (9.0pt)", callback_data="size_xlarge")
-    back = types.InlineKeyboardButton("🔙 رجوع", callback_data="menu_settings_main")
+    def mark(sz, text):
+        return f"✅ {text}" if abs(sz - cur_size) < 0.1 else text
+    b1 = types.InlineKeyboardButton(mark(5.5, "صغير (5.5pt)"), callback_data="size_small")
+    b2 = types.InlineKeyboardButton(mark(6.8, "متوسط (6.8pt)"), callback_data="size_medium")
+    b3 = types.InlineKeyboardButton(mark(7.8, "كبير (7.8pt)"), callback_data="size_large")
+    b4 = types.InlineKeyboardButton(mark(9.0, "كبير جداً (9.0pt)"), callback_data="size_xlarge")
+    back = types.InlineKeyboardButton("🔙 رجوع للقائمة", callback_data="menu_settings_main")
     markup.add(b1, b2)
     markup.add(b3, b4)
     markup.add(back)
     return markup
 
-def color_menu_markup():
+def color_menu_markup(chat_id):
+    conf = get_user_settings(chat_id)
+    cur_col = conf.get('color_name', 'red')
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("🔴 أحمر", callback_data="color_red")
-    b2 = types.InlineKeyboardButton("🔵 أزرق", callback_data="color_blue")
-    b3 = types.InlineKeyboardButton("🟢 أخضر", callback_data="color_green")
-    b4 = types.InlineKeyboardButton("🟣 بنفسجي", callback_data="color_purple")
-    b5 = types.InlineKeyboardButton("🟠 برتقالي", callback_data="color_orange")
-    b6 = types.InlineKeyboardButton("⚫ أسود", callback_data="color_black")
-    back = types.InlineKeyboardButton("🔙 رجوع", callback_data="menu_settings_main")
+    def mark(c_name, text):
+        return f"✅ {text}" if c_name == cur_col else text
+    b1 = types.InlineKeyboardButton(mark('red', "🔴 أحمر"), callback_data="color_red")
+    b2 = types.InlineKeyboardButton(mark('blue', "🔵 أزرق"), callback_data="color_blue")
+    b3 = types.InlineKeyboardButton(mark('green', "🟢 أخضر"), callback_data="color_green")
+    b4 = types.InlineKeyboardButton(mark('purple', "🟣 بنفسجي"), callback_data="color_purple")
+    b5 = types.InlineKeyboardButton(mark('orange', "🟠 برتقالي"), callback_data="color_orange")
+    b6 = types.InlineKeyboardButton(mark('black', "⚫ أسود"), callback_data="color_black")
+    back = types.InlineKeyboardButton("🔙 رجوع للقائمة", callback_data="menu_settings_main")
     markup.add(b1, b2)
     markup.add(b3, b4)
     markup.add(b5, b6)
@@ -277,17 +303,21 @@ def handle_document(message):
         with open(output_path, 'rb') as f_out:
             caption = (
                 f"✅ **تمت ترجمة ملفك بنجاح!** 📄✨\n\n"
-                f"• حجم الخط: `{size_label}` | اللون: `{color_label}`\n"
+                f"• حجم الخط المطبق: `{size_label}`\n"
+                f"• لون الترجمة المطبق: `{color_label}`\n"
                 f"• شملت الترجمة نصوص ومخططات الـ PDF التوضيحية بدقة 🩺\n"
                 f"• تم الحفاظ التام على المصطلحات الطبية والأكاديمية.\n"
                 f"• استغرقت المعالجة: `{time.time() - t_start:.1f}` ثانية ⚡\n\n"
-                f"💡 *لتغيير حجم الخط أو اللون أرسل الأمر:* /settings"
+                f"💡 *لتغيير حجم الخط أو اللون انقر الزر أدناه أو أرسل:* /settings"
             )
+            doc_markup = types.InlineKeyboardMarkup()
+            doc_markup.add(types.InlineKeyboardButton("⚙️ تعديل حجم ولون الخط", callback_data="menu_settings_main"))
             bot.send_document(
                 message.chat.id,
                 f_out,
                 caption=caption,
                 parse_mode="Markdown",
+                reply_markup=doc_markup,
                 reply_to_message_id=message.message_id
             )
 
@@ -401,7 +431,7 @@ def handle_callbacks(call):
     elif data == "menu_size":
         text = "📏 **اختر حجم خط الترجمة المطلوب للملفات:**"
         try:
-            bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=size_menu_markup())
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=size_menu_markup(chat_id))
         except Exception:
             pass
 
@@ -409,7 +439,7 @@ def handle_callbacks(call):
     elif data == "menu_color":
         text = "🎨 **اختر لون خط الترجمة المطلوب:**"
         try:
-            bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=color_menu_markup())
+            bot.edit_message_text(text, chat_id, msg_id, parse_mode="Markdown", reply_markup=color_menu_markup(chat_id))
         except Exception:
             pass
 
@@ -419,6 +449,10 @@ def handle_callbacks(call):
         chosen = SIZE_OPTIONS[key]
         update_user_settings(chat_id, chosen)
         conf = get_user_settings(chat_id)
+        try:
+            bot.answer_callback_query(call.id, text=f"تم حفظ: {chosen['size_label']}")
+        except Exception:
+            pass
         text = (
             f"✅ **تم ضبط حجم الخط بنجاح إلى**: `{chosen['size_label']}`\n\n"
             f"• **لون الترجمة الحالي**: `{conf['color_label']}`\n\n"
@@ -435,6 +469,10 @@ def handle_callbacks(call):
         chosen = COLOR_OPTIONS[key]
         update_user_settings(chat_id, chosen)
         conf = get_user_settings(chat_id)
+        try:
+            bot.answer_callback_query(call.id, text=f"تم حفظ: {chosen['color_label']}")
+        except Exception:
+            pass
         text = (
             f"✅ **تم ضبط لون الترجمة بنجاح إلى**: `{chosen['color_label']}`\n\n"
             f"• **حجم الخط الحالي**: `{conf['size_label']}`\n\n"
@@ -449,6 +487,10 @@ def handle_callbacks(call):
     elif data == "set_reset":
         update_user_settings(chat_id, DEFAULT_SETTINGS)
         conf = get_user_settings(chat_id)
+        try:
+            bot.answer_callback_query(call.id, text="تمت استعادة الإعدادات الافتراضية")
+        except Exception:
+            pass
         text = (
             "🔄 **تمت استعادة الإعدادات الافتراضية بنجاح!**\n\n"
             f"• **حجم الخط**: `{conf['size_label']}`\n"

@@ -173,13 +173,13 @@ class FastTranslationEngine:
         try:
             import urllib.request
             import urllib.parse
-            # تقسيم إلى دفعات بحجم 40 كلمة لتجنب أي تعليق
-            for i in range(0, min(len(truly_needed), 80), 40):
+            # تقسيم إلى دفعات بحجم 40 كلمة لتغطية كافة المصطلحات بدقة
+            for i in range(0, len(truly_needed), 40):
                 batch = truly_needed[i:i+40]
                 text = "\n".join(batch)
                 url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ar&dt=t&q={urllib.parse.quote(text)}"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                with urllib.request.urlopen(req, timeout=4.0) as resp:
                     data = json.loads(resp.read().decode('utf-8'))
                     if data and data[0]:
                         trans_text = "".join([p[0] for p in data[0] if p[0]])
@@ -188,6 +188,17 @@ class FastTranslationEngine:
                             for word, trans in zip(batch, lines):
                                 if trans:
                                     self.cache[word] = trans
+
+            # حفظ الكلمات المترجمة حديثاً في المعجم لضمان ثباتها
+            if self.cache:
+                master_path = os.path.join(BASE_DIR, "master_dictionary.json")
+                with self.lock:
+                    self.master_dict.update(self.cache)
+                    try:
+                        with open(master_path, 'w', encoding='utf-8') as f:
+                            json.dump(self.master_dict, f, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -307,10 +318,11 @@ def translate_pdf_file(
                 cur_size = gloss_size
                 gloss_w = font.text_length(bidi_text, fontsize=cur_size)
 
-                # ملاءمة الحجم إذا كانت الكلمة أطول من المساحة الإنجليزية
-                word_w = x1 - x0
-                if gloss_w > word_w * 1.6 and cur_size > 5.6:
-                    cur_size = max(5.4, cur_size - 0.8)
+                # ملاءمة الحجم بذكاء إذا كانت الكلمة أطول من المساحة الإنجليزية مع مراعاة الحجم المختار
+                word_w = max(5.0, x1 - x0)
+                min_allowed = max(5.2, gloss_size * 0.72)
+                if gloss_w > word_w * 1.7 and cur_size > min_allowed:
+                    cur_size = max(min_allowed, cur_size - 0.8)
                     gloss_w = font.text_length(bidi_text, fontsize=cur_size)
 
                 x_center = (x0 + x1) / 2.0
