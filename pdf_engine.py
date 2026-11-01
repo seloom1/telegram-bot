@@ -36,7 +36,8 @@ def get_font_path():
             return c
     return None
 
-STOP_WORDS = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'it', 'its', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'as', 'by'}
+# لا نستثني كلمات الربط أو الأفعال المساعدة حتى تظهر الترجمة كاملة فوق كل كلمة
+STOP_WORDS = set()
 
 def clean_arabic_gloss(text):
     if not text:
@@ -121,10 +122,9 @@ class FastTranslationEngine:
         return ''
 
     def prefetch(self, words_set):
-        # تصفية الكلمات الحقيقية فقط التي يزيد طولها عن حرفين وغير موجودة في المعجم
         needed = [
             w for w in words_set 
-            if len(w) > 2 and not w.isdigit() and w not in self.master_dict and w not in self.cache
+            if len(w) > 1 and not w.isdigit() and w not in self.master_dict and w not in self.cache
         ]
         
         # فحص الجذور أولاً في الذاكرة
@@ -142,26 +142,26 @@ class FastTranslationEngine:
         if not truly_needed:
             return
 
-        # محاولة ترجمة الكلمات النادرة أونلاين بدفعة واحدة وسريعة جداً بدون تأخير (Timeout = 2.0s)
+        # ترجمة سريعة بدفعة واحدة للكلمات النادرة (Batch Translation عبر طلب واحد فقط)
         try:
             import urllib.request
             import urllib.parse
-            # نترجم فقط أول 30 كلمة غير معروفة كحد أقصى لتجنب أي بطء
-            sample_words = truly_needed[:30]
-            query = " | ".join(sample_words)
-            url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ar&dt=t&q={urllib.parse.quote(query)}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                if data and data[0]:
-                    full_trans = "".join([part[0] for part in data[0] if part[0]])
-                    trans_parts = [clean_arabic_gloss(p.strip()) for p in full_trans.split("|")]
-                    with self.lock:
-                        for word, trans in zip(sample_words, trans_parts):
-                            if trans:
-                                self.cache[word] = trans
+            # تقسيم إلى دفعات بحجم 40 كلمة لتجنب أي تعليق
+            for i in range(0, min(len(truly_needed), 80), 40):
+                batch = truly_needed[i:i+40]
+                text = "\n".join(batch)
+                url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ar&dt=t&q={urllib.parse.quote(text)}"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    if data and data[0]:
+                        trans_text = "".join([p[0] for p in data[0] if p[0]])
+                        lines = [clean_arabic_gloss(l.strip()) for l in trans_text.split("\n")]
+                        with self.lock:
+                            for word, trans in zip(batch, lines):
+                                if trans:
+                                    self.cache[word] = trans
         except Exception:
-            # إذا فشل النت أو حدث حظر، لا يتم تعطيل المعالجة ويستمر المعجم الداخلي فوراً
             pass
 
 
@@ -184,48 +184,72 @@ def translate_pdf_file(input_pdf_path, output_pdf_path, progress_hook=None):
         pages_words[p_idx] = words
         for w in words:
             clean = re.sub(r"^[^\w']+|[^\w']+$", '', w[4]).lower()
-            if clean and not clean.isdigit() and len(clean) >= 1 and clean not in STOP_WORDS:
+            if clean and not clean.isdigit() and len(clean) > 1:
                 unique_words.add(clean)
 
-    # 2. الترجمة المسبقة
+    # 2. الترجمة المسبقة لأي كلمات نادرة بدفعة واحدة
     engine.prefetch(unique_words)
 
-    # 3. الرسم على الصفحات مع المحاذاة المضبوطة (5.8pt و Offset = 1.8)
-    gloss_size = 5.8
+    # 3. إعدادات الخط المضبوطة (حجم أكبر 6.6pt مع ضبط المحاذاة ومنع التداخل)
+    gloss_size = 6.6
     vertical_offset = 1.8
 
     for p_idx in range(total_pages):
         page = doc[p_idx]
         words = pages_words.get(p_idx, [])
 
+        # تجميع الكلمات حسب الأسطر لمنع التداخل الأفقي
+        lines = {}
         for w in words:
-            x0, y0, x1, y1, raw_text = w[0], w[1], w[2], w[3], w[4]
-            clean = re.sub(r"^[^\w']+|[^\w']+$", '', raw_text).lower()
+            y_bucket = round(w[1] / 3.0) * 3.0
+            lines.setdefault(y_bucket, []).append(w)
 
-            if not clean or clean in STOP_WORDS:
-                continue
+        for y_bucket in sorted(lines.keys()):
+            line_words = sorted(lines[y_bucket], key=lambda x: x[0])
+            last_x1 = -1.0
 
-            ar_trans = engine.translate_word(clean)
-            if not ar_trans:
-                continue
+            for w in line_words:
+                x0, y0, x1, y1, raw_text = w[0], w[1], w[2], w[3], w[4]
+                clean = re.sub(r"^[^\w']+|[^\w']+$", '', raw_text).lower()
 
-            reshaped = arabic_reshaper.reshape(ar_trans)
-            bidi_text = get_display(reshaped)
+                if not clean or clean.isdigit() or len(clean) <= 1:
+                    continue
 
-            gloss_w = font.text_length(bidi_text, fontsize=gloss_size)
-            x_center = (x0 + x1) / 2.0
-            x_pos = max(5.0, x_center - (gloss_w / 2.0))
-            y_pos = y0 + vertical_offset
+                ar_trans = engine.translate_word(clean)
+                if not ar_trans:
+                    continue
 
-            page.insert_text(
-                pymupdf.Point(x_pos, y_pos),
-                bidi_text,
-                fontname="arial_ar_gloss",
-                fontfile=font_path,
-                fontsize=gloss_size,
-                color=(0.85, 0.0, 0.0), # أحمر واضح
-                overlay=True
-            )
+                reshaped = arabic_reshaper.reshape(ar_trans)
+                bidi_text = get_display(reshaped)
+
+                cur_size = gloss_size
+                gloss_w = font.text_length(bidi_text, fontsize=cur_size)
+
+                # ملاءمة الحجم إذا كانت الكلمة أطول من المساحة الإنجليزية
+                word_w = x1 - x0
+                if gloss_w > word_w * 1.6 and cur_size > 5.6:
+                    cur_size = 5.8
+                    gloss_w = font.text_length(bidi_text, fontsize=cur_size)
+
+                x_center = (x0 + x1) / 2.0
+                x_pos = max(5.0, x_center - (gloss_w / 2.0))
+
+                # منع التداخل الأفقي مع الكلمة السابقة في نفس السطر
+                if x_pos < last_x1 + 1.2:
+                    x_pos = last_x1 + 1.2
+
+                y_pos = y0 + vertical_offset
+
+                page.insert_text(
+                    pymupdf.Point(x_pos, y_pos),
+                    bidi_text,
+                    fontname="arial_ar_gloss",
+                    fontfile=font_path,
+                    fontsize=cur_size,
+                    color=(0.85, 0.0, 0.0), # أحمر عالي الوضوح
+                    overlay=True
+                )
+                last_x1 = x_pos + gloss_w
 
         if progress_hook:
             progress_hook(p_idx + 1, total_pages)
